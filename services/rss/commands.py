@@ -1,3 +1,9 @@
+"""RSS/Sitemap 命令与通知
+
+- 注册 `/rss` 命令（list/add/del）管理订阅源
+- 注册 `/news` 命令生成并发送关键词速览
+- 提供发送更新通知与关键词摘要的工具函数
+"""
 import logging
 import asyncio
 from .manager import RSSManager
@@ -18,7 +24,10 @@ async def send_update_notification(
     target_chat: str = None,
 ) -> None:
     """
-    发送Sitemap更新通知，包括文件（如果可用）和新增URL列表。
+    发送 sitemap 更新通知，包括文件（如果可用）与新增 URL 列表
+
+    - 优先发送当日打包的 sitemap 文件，并附带美化标题
+    - 如有新增 URL，则逐条发送并在结尾发送完成提示
     """
     chat_id = target_chat or telegram_config["target_chat"]
     if not chat_id:
@@ -100,7 +109,7 @@ async def send_update_notification(
 
 
 async def rss_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理 /rss 命令"""
+    """处理 `/rss` 命令：list/add/del"""
     user = update.message.from_user
     chat_id = update.message.chat_id
     logging.info(f"收到RSS命令 - 用户: {user.username}(ID:{user.id}) 聊天ID: {chat_id}")
@@ -137,7 +146,7 @@ async def rss_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
         url = context.args[1]
-        # 检查URL是否包含sitemap关键词，不再强制要求.xml后缀
+        # 仅进行简单校验：包含 sitemap 关键词（实际可更严格）
         if "sitemap" not in url.lower():
             logging.warning(f"无效的sitemap URL: {url} (URL需包含sitemap关键词)")
             await update.message.reply_text("URL必须以sitemap.xml结尾")
@@ -158,7 +167,7 @@ async def rss_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         else:
             if "今天已经更新过此sitemap" in error_msg:
-                # 获取当前文件并发送给用户 (这部分是发送给命令发起者的，逻辑保持)
+                # 获取当前文件并发送给命令发起者（与频道通知逻辑分离）
                 try:
                     domain = urlparse(url).netloc
                     current_file = (
@@ -214,14 +223,14 @@ async def rss_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 def register_commands(application: Application):
-    """注册RSS相关的命令"""
+    """注册 RSS 相关命令至 Application"""
     application.add_handler(CommandHandler("rss", rss_command))
     application.add_handler(CommandHandler("news", force_summary_command_handler))
 
 
 async def force_send_keywords_summary(bot: Bot, target_chat: str = None) -> None:
     """
-    强制从存储的 current 和 latest sitemap 文件比对生成并发送关键词汇总。
+    强制从存储的 current 与 latest sitemap 文件比对生成并发送关键词速览
     """
     chat_id = target_chat or telegram_config["target_chat"]
     if not chat_id:
@@ -278,7 +287,7 @@ async def force_send_keywords_summary(bot: Bot, target_chat: str = None) -> None
 
 
 async def force_summary_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理 /news 命令，强制发送关键词汇总"""
+    """处理 `/news` 命令，触发强制发送关键词速览"""
     user = update.message.from_user
     chat_id = update.message.chat_id # Chat where the command was issued
     logging.info(f"收到 /news 命令 - 用户: {user.username}(ID:{user.id}) 聊天ID: {chat_id}")
@@ -305,7 +314,7 @@ async def send_keywords_summary(
     target_chat: str = None,
 ) -> None:
     """
-    从URL列表中提取关键词并按域名分组发送汇总消息
+    从新增 URL 列表中提取关键词并按域名分组发送汇总消息
 
     Args:
         bot: Telegram Bot实例
@@ -320,10 +329,10 @@ async def send_keywords_summary(
     if not all_new_urls:
         return
 
-    # 创建域名-关键词映射字典
+    # 创建 域名 -> 关键词 列表映射
     domain_keywords = {}
 
-    # 从URL中提取域名和关键词
+    # 从 URL 中提取域名与末级路径作为关键词
     for url in all_new_urls:
         try:
             # 解析URL获取域名和路径

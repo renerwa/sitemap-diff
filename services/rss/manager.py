@@ -1,3 +1,9 @@
+"""RSS/Sitemap 管理器
+
+- 负责持久化订阅源列表与创建目录结构
+- 下载并保存每日 sitemap，维护 current/latest 两份版本
+- 比较新旧 sitemap 差异，返回新增 URL 列表
+"""
 import json
 import logging
 from pathlib import Path
@@ -7,14 +13,15 @@ import requests
 
 
 class RSSManager:
+    """封装对 RSS/Sitemap 的增删查与下载、比较逻辑"""
     def __init__(self):
         self.config_dir = Path("storage/rss/config")
-        self.sitemap_dir = Path("storage/rss/sitemaps")  # 存储sitemap的基础目录
+        self.sitemap_dir = Path("storage/rss/sitemaps")  # 存储 sitemap 的基础目录
         self.feeds_file = self.config_dir / "feeds.json"
         self._init_directories()
 
     def _init_directories(self):
-        """初始化必要的目录"""
+        """初始化必要目录与订阅配置文件"""
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.sitemap_dir.mkdir(parents=True, exist_ok=True)
 
@@ -22,27 +29,27 @@ class RSSManager:
             self.feeds_file.write_text("[]")
 
     def download_sitemap(self, url: str) -> tuple[bool, str, Path | None, list[str]]:
-        """下载并保存sitemap文件
+        """下载并保存 sitemap 文件
 
         Args:
             url: sitemap的URL
 
         Returns:
-            tuple[bool, str, Path | None, list[str]]: (是否成功, 错误信息, 带日期的文件路径, 新增的URL列表)
+            tuple[bool, str, Path | None, list[str]]: (是否成功, 错误信息, 带日期的文件路径, 新增的 URL 列表)
         """
         try:
-            # 获取域名作为目录名
+            # 以域名分目录存放相关文件
             logging.info(f"尝试下载sitemap: {url}")
             domain = urlparse(url).netloc
             domain_dir = self.sitemap_dir / domain
             domain_dir.mkdir(parents=True, exist_ok=True)
 
-            # 检查今天是否已经更新过
+            # 检查今天是否已经更新过（避免重复下载）
             last_update_file = domain_dir / "last_update.txt"
             today = datetime.now().strftime("%Y%m%d")
             logging.info(f"今天的日期: {today}")
 
-            # 保存文件
+            # 维护 current/latest 两份版本，并生成当日带日期的临时文件用于发送
             current_file = domain_dir / "sitemap-current.xml"
             latest_file = domain_dir / "sitemap-latest.xml"
             dated_file = domain_dir / f"{domain}_sitemap_{today}.xml"
@@ -69,7 +76,7 @@ class RSSManager:
                         [],
                     )
 
-            # 下载新文件
+            # 下载新文件（携带 UA 提升兼容性）
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             }
@@ -77,35 +84,35 @@ class RSSManager:
             response.raise_for_status()
 
             new_urls = []
-            # 如果存在current文件，比较差异
+            # 如果存在 current 文件，比较差异并将旧版本移至 latest
             if current_file.exists():
                 old_content = current_file.read_text()
                 new_urls = self.compare_sitemaps(response.text, old_content)
                 current_file.replace(latest_file)
 
-            # 保存新文件
+            # 保存新文件与当日临时文件
             current_file.write_text(response.text)
             dated_file.write_text(response.text)  # 临时文件，用于发送到频道后删除
 
-            # 更新最后更新日期
+            # 更新最后更新日期标记
             last_update_file.write_text(today)
 
             logging.info(f"sitemap已保存到: {current_file}")
-            return True, "", dated_file, new_urls  # 只添加新URLs返回
+            return True, "", dated_file, new_urls  # 返回新增 URL 列表
 
         except requests.exceptions.RequestException as e:
-            return False, f"下载失败: {str(e)}", None, []  # 只添加空列表返回
+            return False, f"下载失败: {str(e)}", None, []
         except Exception as e:
-            return False, f"保存失败: {str(e)}", None, []  # 只添加空列表返回
+            return False, f"保存失败: {str(e)}", None, []
 
     def add_feed(self, url: str) -> tuple[bool, str, Path | None, list[str]]:
-        """添加sitemap监控
+        """添加 sitemap 监控（首次会下载当日文件）
 
         Args:
             url: sitemap的URL
 
         Returns:
-            tuple[bool, str, Path | None, list[str]]: (是否成功, 错误信息, 带日期的文件路径, 新增的URL列表)
+            tuple[bool, str, Path | None, list[str]]: (是否成功, 错误信息, 带日期的文件路径, 新增的 URL 列表)
         """
         try:
             logging.info(f"尝试添加sitemap监控: {url}")
@@ -124,7 +131,7 @@ class RSSManager:
                 logging.info(f"成功添加sitemap监控: {url}")
                 return True, "", dated_file, new_urls
             else:
-                # 如果feed已存在，仍然尝试下载（可能是新的一天）
+                # 已存在的 feed 也尝试下载（可能是新的一天）
                 success, error_msg, dated_file, new_urls = self.download_sitemap(url)
                 if not success:
                     return False, error_msg, None, []
@@ -135,7 +142,7 @@ class RSSManager:
             return False, f"添加失败: {str(e)}", None, []
 
     def remove_feed(self, url: str) -> tuple[bool, str]:
-        """删除RSS订阅
+        """删除 RSS 订阅
 
         Args:
             url: RSS订阅链接
@@ -161,7 +168,7 @@ class RSSManager:
             return False, f"删除失败: {str(e)}"
 
     def get_feeds(self) -> list:
-        """获取所有监控的feeds"""
+        """获取所有监控的订阅源列表"""
         try:
             content = self.feeds_file.read_text()
             return json.loads(content)
@@ -170,7 +177,10 @@ class RSSManager:
             return []
 
     def compare_sitemaps(self, current_content: str, old_content: str) -> list[str]:
-        """比较新旧sitemap，返回新增的URL列表"""
+        """比较新旧 sitemap，返回新增的 URL 列表
+
+        采用官方 sitemap 命名空间解析 URL 列表，取差集获得新增项
+        """
         try:
             from xml.etree import ElementTree as ET
 
