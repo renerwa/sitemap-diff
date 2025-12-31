@@ -40,8 +40,11 @@ class RSSManager:
         try:
             # 以域名分目录存放相关文件
             logging.info(f"尝试下载sitemap: {url}")
+            # 从URL中提取域名作为目录名
             domain = urlparse(url).netloc
+            # 构建完整路径
             domain_dir = self.sitemap_dir / domain
+            # 为该域名创建专属文件夹（如果不存在）
             domain_dir.mkdir(parents=True, exist_ok=True)
 
             # 检查今天是否已经更新过（避免重复下载）
@@ -54,7 +57,9 @@ class RSSManager:
             latest_file = domain_dir / "sitemap-latest.xml"
             dated_file = domain_dir / f"{domain}_sitemap_{today}.xml"
 
+            # 如果上次更新日期与今天相同，且相关文件已存在，则直接返回
             if last_update_file.exists():
+                # 从文件读取上次更新日期
                 last_date = last_update_file.read_text().strip()
                 logging.info(f"上次更新日期: {last_date}")
                 if last_date == today:
@@ -83,18 +88,19 @@ class RSSManager:
             response = requests.get(url, timeout=10, headers=headers)
             response.raise_for_status()
 
+            # 初始化新增 URL 列表
             new_urls = []
-            # 如果存在 current 文件，比较差异并将旧版本移至 latest
+            # 如果存在 current 文件，比较差异并将 current 替换为 latest
             if current_file.exists():
                 old_content = current_file.read_text()
                 new_urls = self.compare_sitemaps(response.text, old_content)
-                current_file.replace(latest_file)
+                current_file.replace(latest_file)  # 将 current 替换为 latest
 
-            # 保存新文件与当日临时文件
+            # 将下载的新文件保存为 current 与当日临时文件   
             current_file.write_text(response.text)
             dated_file.write_text(response.text)  # 临时文件，用于发送到频道后删除
 
-            # 更新最后更新日期标记
+            # 将今天的日期写入 last_update_file 文件
             last_update_file.write_text(today)
 
             logging.info(f"sitemap已保存到: {current_file}")
