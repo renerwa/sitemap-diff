@@ -29,5 +29,5 @@ async def trip(ctx):
 async def start_task():
     """以任务形式启动 Discord 机器人"""
     token = discord_config["token"]
-    logging.info(f"{token}")
+    logging.info("Starting Discord bot")
     return await bot.start(token)
