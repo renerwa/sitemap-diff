@@ -37,6 +37,8 @@ def main():
     # 如果配置了 Discord token，则启动 Discord 机器人
     if discord_token:
         tasks.append(discord_bot.start_task())
+        if discord_config.get("target_channel_id"):
+            tasks.append(discord_bot.scheduled_task())
 
     # 如果配置了 Telegram token（支持多个，用逗号分隔），则启动每个机器人
     # 并为每个机器人添加定时任务以检查 RSS/Sitemap 更新

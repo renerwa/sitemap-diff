@@ -11,4 +11,5 @@ telegram_config = {
 discord_config = {
     "token": os.environ.get("DISCORD_TOKEN", ""),
     "guild_id": os.environ.get("DISCORD_GUILD_ID"),
+    "target_channel_id": os.environ.get("DISCORD_TARGET_CHANNEL_ID"),
 }

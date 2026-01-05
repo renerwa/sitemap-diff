@@ -10,6 +10,9 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 import requests
+import gzip
+from io import BytesIO
+from typing import Set
 
 
 class RSSManager:
@@ -81,26 +84,24 @@ class RSSManager:
                         [],
                     )
 
-            # 下载新文件（携带 UA 提升兼容性）
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             }
-            response = requests.get(url, timeout=10, headers=headers)
+            response = requests.get(url, timeout=20, headers=headers)
             response.raise_for_status()
 
-            # 初始化新增 URL 列表
+            combined_urls = self._collect_urls_from_sitemap(response, headers=headers, depth=0)
+            combined_xml = self._build_urlset_xml(combined_urls)
+
             new_urls = []
-            # 如果存在 current 文件，比较差异并将 current 替换为 latest
             if current_file.exists():
                 old_content = current_file.read_text()
-                new_urls = self.compare_sitemaps(response.text, old_content)
-                current_file.replace(latest_file)  # 将 current 替换为 latest
+                new_urls = self.compare_sitemaps(combined_xml, old_content)
+                current_file.replace(latest_file)
 
-            # 将下载的新文件保存为 current 与当日临时文件   
-            current_file.write_text(response.text)
-            dated_file.write_text(response.text)  # 临时文件，用于发送到频道后删除
+            current_file.write_text(combined_xml)
+            dated_file.write_text(combined_xml)
 
-            # 将今天的日期写入 last_update_file 文件
             last_update_file.write_text(today)
 
             logging.info(f"sitemap已保存到: {current_file}")
@@ -188,23 +189,105 @@ class RSSManager:
         采用官方 sitemap 命名空间解析 URL 列表，取差集获得新增项
         """
         try:
-            from xml.etree import ElementTree as ET
-
-            current_root = ET.fromstring(current_content)
-            old_root = ET.fromstring(old_content)
-
-            current_urls = set()
-            old_urls = set()
-
-            ns = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-
-            for url in current_root.findall(".//ns:url/ns:loc", ns):
-                current_urls.add(url.text)
-
-            for url in old_root.findall(".//ns:url/ns:loc", ns):
-                old_urls.add(url.text)
-
+            current_urls = self._extract_all_urls(current_content)
+            old_urls = self._extract_all_urls(old_content)
             return list(current_urls - old_urls)
         except Exception as e:
             logging.error(f"比较sitemap失败: {str(e)}")
             return []
+
+    def _build_urlset_xml(self, urls: Set[str]) -> str:
+        ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
+        items = []
+        for u in sorted(urls):
+            items.append(f"<url><loc>{u}</loc></url>")
+        return f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="{ns}">\n' + "\n".join(items) + "\n</urlset>"
+
+    def _is_gzip_response(self, resp: requests.Response, url: str) -> bool:
+        ct = (resp.headers.get("Content-Type") or "").lower()
+        ce = (resp.headers.get("Content-Encoding") or "").lower()
+        return url.lower().endswith(".gz") or "gzip" in ce or "application/gzip" in ct or "application/x-gzip" in ct
+
+    def _response_to_text(self, resp: requests.Response, url: str) -> str:
+        try:
+            if self._is_gzip_response(resp, url):
+                raw = resp.content
+                try:
+                    data = gzip.decompress(raw)
+                except OSError:
+                    data = raw
+                try:
+                    return data.decode("utf-8")
+                except UnicodeDecodeError:
+                    return data.decode("latin-1", errors="ignore")
+            else:
+                if resp.encoding:
+                    return resp.text
+                return resp.content.decode("utf-8", errors="ignore")
+        except Exception:
+            return resp.text
+
+    def _collect_urls_from_sitemap(self, resp: requests.Response, headers: dict, depth: int) -> Set[str]:
+        from xml.etree import ElementTree as ET
+        txt = self._response_to_text(resp, resp.url)
+        urls: Set[str] = set()
+        try:
+            root = ET.fromstring(txt)
+        except Exception:
+            return urls
+        tag = root.tag.lower()
+        if tag.endswith("urlset"):
+            for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
+                if loc.text:
+                    urls.add(loc.text.strip())
+            if not urls:
+                for loc in root.findall(".//loc"):
+                    if loc.text:
+                        urls.add(loc.text.strip())
+            return urls
+        if tag.endswith("sitemapindex"):
+            if depth > 3:
+                return urls
+            for node in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}sitemap/{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
+                if node.text:
+                    child_url = node.text.strip()
+                    try:
+                        child_resp = requests.get(child_url, timeout=20, headers=headers)
+                        child_resp.raise_for_status()
+                        child_urls = self._collect_urls_from_sitemap(child_resp, headers=headers, depth=depth + 1)
+                        urls.update(child_urls)
+                    except Exception:
+                        logging.warning(f"子 sitemap 获取失败: {child_url}")
+            if not urls:
+                for node in root.findall(".//sitemap/loc"):
+                    if node.text:
+                        child_url = node.text.strip()
+                        try:
+                            child_resp = requests.get(child_url, timeout=20, headers=headers)
+                            child_resp.raise_for_status()
+                            child_urls = self._collect_urls_from_sitemap(child_resp, headers=headers, depth=depth + 1)
+                            urls.update(child_urls)
+                        except Exception:
+                            logging.warning(f"子 sitemap 获取失败: {child_url}")
+            return urls
+        return urls
+
+    def _extract_all_urls(self, xml_text: str) -> Set[str]:
+        from xml.etree import ElementTree as ET
+        urls: Set[str] = set()
+        try:
+            root = ET.fromstring(xml_text)
+        except Exception:
+            return urls
+        tag = root.tag.lower()
+        if tag.endswith("urlset"):
+            for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc"):
+                if loc.text:
+                    urls.add(loc.text.strip())
+            if not urls:
+                for loc in root.findall(".//loc"):
+                    if loc.text:
+                        urls.add(loc.text.strip())
+        elif tag.endswith("sitemapindex"):
+            urls = set()
+        return urls

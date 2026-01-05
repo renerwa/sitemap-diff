@@ -166,3 +166,71 @@ async def start_task():
     token = discord_config["token"]
     logging.info("Starting Discord bot")
     return await bot.start(token)
+
+async def scheduled_task():
+    await bot.wait_until_ready()
+    channel_id = discord_config.get("target_channel_id")
+    if not channel_id:
+        return
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except Exception:
+        channel = None
+    if not channel:
+        return
+    from urllib.parse import urlparse as _parse
+    while True:
+        try:
+            feeds = rss_manager.get_feeds()
+            all_new_urls = []
+            for url in feeds:
+                success, error_msg, dated_file, new_urls = rss_manager.add_feed(url)
+                domain = urlparse(url).netloc
+                if success and dated_file and Path(dated_file).exists():
+                    header_message = (
+                        f"{domain}\n"
+                        f"------------------------------------\n"
+                        + (f"新增 {len(new_urls)} 条\n" if new_urls else f"{domain} 今日无更新\n")
+                        + f"来源: {url}\n"
+                    )
+                    await channel.send(header_message)
+                    await channel.send(file=discord.File(dated_file))
+                    try:
+                        Path(dated_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    for u in new_urls:
+                        await channel.send(u)
+                elif "今天已经更新过此sitemap" in error_msg:
+                    pass
+                else:
+                    pass
+                all_new_urls.extend(new_urls)
+            await asyncio.sleep(10)
+            if all_new_urls:
+                domain_keywords = {}
+                for u in all_new_urls:
+                    try:
+                        parsed_url = _parse(u)
+                        d = parsed_url.netloc
+                        parts = parsed_url.path.rstrip("/").split("/")
+                        if parts and parts[-1]:
+                            k = parts[-1].strip()
+                            if k:
+                                domain_keywords.setdefault(d, []).append(k)
+                    except Exception:
+                        continue
+                for d in list(domain_keywords.keys()):
+                    domain_keywords[d] = list(set(domain_keywords[d]))
+                if domain_keywords:
+                    summary_message = "━━━━━━━━━━━━━━━━━━\n#今日新增 #关键词 #速览\n━━━━━━━━━━━━━━━━━━\n\n"
+                    for d, keywords in domain_keywords.items():
+                        if keywords:
+                            summary_message += f"{d}:\n"
+                            for i, k in enumerate(keywords, 1):
+                                summary_message += f"  {i}. {k}\n"
+                            summary_message += "\n"
+                    await channel.send(summary_message)
+            await asyncio.sleep(3600)
+        except Exception:
+            await asyncio.sleep(60)
